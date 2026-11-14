@@ -1,5 +1,7 @@
 # Life² — Bloodlines
 
+Live at huggingface: https://huggingface.co/spaces/Aluode/Life2
+
 A video on the gameplay especially towards later bit: https://www.youtube.com/live/xlBnmoBj5DA
 
 Game was developed while the video was recorded. Initially there was some AI generation problems. 
