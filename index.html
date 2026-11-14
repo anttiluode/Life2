@@ -106,7 +106,7 @@
       <label>born <select id="sWealth"><option value="poor">poor</option><option value="ordinary" selected>ordinary</option><option value="rich">rich</option></select></label>
     </div>
     <div class="choices"><button id="bBegin" class="primary">Begin at 18</button><button id="bLoad2">Load a saved dynasty</button><button id="bSet2">AI narration and pictures</button></div>
-    <p class="dim small">Everything runs in your browser. With your own local models you can have every year narrated and the milestones painted: see “AI”.</p>
+    <p class="dim small" id="startNote">Everything runs in your browser. With your own local models you can have every year narrated and the milestones painted: see “AI”.</p>
   </div>
 </div>
 
@@ -163,11 +163,12 @@
 <div id="settings" class="overlay hidden">
   <div class="card wide">
     <h2>Narration and pictures</h2>
-    <p class="dim small">All of this runs on your own machine. Nothing is sent anywhere else, unless you pick an online voice. Without it the game uses written narration and no pictures.</p>
+    <p class="dim small"><span id="privacyNote">All of this runs on your own machine. Nothing is sent anywhere else, unless you pick an online voice.</span> Without it the game uses written narration and no pictures.</p>
     <div class="setGrid">
       <div>
         <h4>Narrator</h4>
         <label><input type="radio" name="narr" value="templates"> Written (no AI)</label>
+        <label class="spaceOnly hidden"><input type="radio" name="narr" value="space"> This Space <span class="dim" id="spaceNarr"></span></label>
         <label><input type="radio" name="narr" value="ollama"> Ollama on this computer</label>
         <div class="sub"><input id="olUrl" size="26"> model <input id="olModel" size="14"></div>
         <label><input type="radio" name="narr" value="openai"> Other local server (llama.cpp, LM Studio)</label>
@@ -184,6 +185,7 @@
       <div>
         <h4>Painter</h4>
         <label><input type="radio" name="paint" value="none"> No pictures</label>
+        <label class="spaceOnly hidden"><input type="radio" name="paint" value="space"> This Space <span class="dim" id="spacePaint"></span></label>
         <label><input type="radio" name="paint" value="local"> Local painter (SDXL-Turbo on your GPU)</label>
         <div class="sub"><input id="pUrl" size="26"></div>
         <label><input type="checkbox" id="makeRoom"> Make room for the painter: unload the narrator before each picture (one graphics card)</label>

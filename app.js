@@ -308,7 +308,7 @@
   }
   function showNarr(v, key) {
     $("narrText").textContent = v.text;
-    $("narrSrc").textContent = v.source === "template" ? (AI.settings.narrator === "templates" ? "written narration · turn on a narrator under AI" : "written instead: " + (v.error || "the narrator strayed from the facts")) : "narrated by " + v.source + ((variants[key] || 0) ? ` · version ${(variants[key] || 0) + 1}` : "");
+    $("narrSrc").textContent = v.source === "template" ? (AI.settings.narrator === "templates" ? "written narration · turn on a narrator under AI" : "written instead: " + (v.error || "the narrator strayed from the facts")) : (v.source === "space" ? "narrated on this Space" : "narrated by " + v.source) + ((variants[key] || 0) ? ` · version ${(variants[key] || 0) + 1}` : "");
   }
   $("narrReroll").onclick = async () => {
     const rec = G.records[G.records.length - 1];
@@ -537,8 +537,21 @@
       : `<option value="">${AI.canSpeak ? "no voices found yet" : "this browser cannot speak"}</option>`;
   }
   if (AI.canSpeak) speechSynthesis.onvoiceschanged = () => { if (!$("settings").classList.contains("hidden")) fillVoices(); };
+  function showSpace() {
+    const sp = AI.space;
+    document.querySelectorAll(".spaceOnly").forEach((el) => el.classList.toggle("hidden", !sp));
+    if (!sp) return;
+    $("spaceNarr").textContent = `(${sp.narrator.split("/").pop()} · ${sp.device})`;
+    $("spacePaint").textContent = `(${sp.painter.split("/").pop()} · ${sp.device})`;
+    $("privacyNote").textContent = "“This Space” runs the models on this Hugging Face Space: the year's fact sheet and the picture description are sent to it, nothing else. The other options run on your own machine.";
+    $("startNote").textContent = `Every year is narrated by ${sp.narrator.split("/").pop()} and the milestones are painted by ${sp.painter.split("/").pop()}, on this Space` +
+      (sp.slow ? ". It runs on a free CPU, so a year's words can take half a minute and a picture longer; the game never waits for them." : ".") +
+      " Saves stay in your browser.";
+  }
+  AI.detectSpace().then(showSpace);
   function openSettings() {
     const s = AI.settings;
+    showSpace();
     document.querySelectorAll("input[name=narr]").forEach((r) => (r.checked = r.value === s.narrator));
     document.querySelectorAll("input[name=paint]").forEach((r) => (r.checked = r.value === s.painter));
     $("olUrl").value = s.ollamaUrl; $("olModel").value = s.ollamaModel; $("oaUrl").value = s.openaiUrl; $("oaModel").value = s.openaiModel; $("pUrl").value = s.painterUrl;
@@ -557,7 +570,7 @@
   $("setClose").onclick = () => $("settings").classList.add("hidden");
   $("setSave").onclick = () => {
     AI.saveSettings(readSettings()); $("settings").classList.add("hidden"); voiceButton();
-    if (G) { render(); showLastPicture(); $("narrSrc").textContent = `narrator: ${AI.settings.narrator} · painter: ${AI.settings.painter === "none" ? "off" : "local"} · voice: ${AI.settings.voice} — takes effect from the next year`; }
+    if (G) { render(); showLastPicture(); $("narrSrc").textContent = `narrator: ${AI.settings.narrator} · painter: ${AI.settings.painter === "none" ? "off" : AI.settings.painter} · voice: ${AI.settings.voice} — takes effect from the next year`; }
   };
   $("vRate").oninput = () => ($("vRateOut").textContent = (+$("vRate").value).toFixed(2) + "×");
   $("testNarr").onclick = async () => {

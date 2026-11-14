@@ -100,12 +100,15 @@
     "Output only the narration: no title, no quotes, no lists, no notes.",
   ].join(" ");
 
-  function userPrompt(f, prev) {
-    const sheet = {
+  function sheetOf(f) {
+    return {
       year: f.year, place: f.place, you: `${f.name}, a ${f.age}-year-old ${f.gender}, ${f.profession}, ${f.class}, ${f.wealth}`,
       health: f.health, heart: f.warmth, world: f.history, what_happened: f.happened,
       people: f.people.map((p) => `${p.name} (${p.relation}; bond ${p.bond}${p.far ? "; far away" : ""})`),
     };
+  }
+  function userPrompt(f, prev) {
+    const sheet = sheetOf(f);
     return (prev && prev.length ? "The two previous years, for continuity:\n" + prev.join("\n") + "\n\n" : "") +
       "Facts for this year:\n" + JSON.stringify(sheet, null, 1) + "\n\nWrite the year.";
   }
@@ -176,6 +179,61 @@
     const j = await r.json();
     return j.choices && j.choices[0] && j.choices[0].message.content;
   }
+  // ---- this Hugging Face Space: the page asks the server it came from (Gradio's HTTP API, streamed)
+  let SPACE = null;
+  async function detectSpace() {
+    try {
+      const r = await fetch("space-config", { signal: AbortSignal.timeout(4000) });
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (!j || !j.space) return null;
+      SPACE = j;
+      // on the Space, its own narrator and painter are the default until the player saves other settings
+      let saved = null; try { saved = localStorage.getItem("life2.ai"); } catch (e) {}
+      if (!saved) S = Object.assign({}, S, { narrator: "space", painter: "space" });
+    } catch (e) {}
+    return SPACE;
+  }
+  async function callSpace(api, data, onPartial, maxMs) {
+    const url = new URL("gradio/gradio_api/call/" + api, location.href).href;
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), maxMs || 240000);
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }), signal: ctl.signal });
+      if (!r.ok) throw new Error("the Space answered " + r.status);
+      const { event_id } = await r.json();
+      const st = await fetch(url + "/" + event_id, { signal: ctl.signal });
+      const reader = st.body.getReader(), dec = new TextDecoder();
+      let buf = "", last = null;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true }).replace(/\r/g, "");
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, i); buf = buf.slice(i + 2);
+          const ev = (block.match(/^event: *(.*)$/m) || [])[1], dl = (block.match(/^data: *(.*)$/m) || [])[1];
+          if (ev === "generating" || ev === "complete") {
+            const d = dl ? JSON.parse(dl) : null;
+            if (d && d.length && d[0] != null) { last = d[0]; if (onPartial) onPartial(last); }
+            if (ev === "complete") return last;
+          } else if (ev === "error") {
+            let m = "the Space could not do it"; try { m = JSON.parse(dl).error || m; } catch (e) {}
+            throw new Error(m);
+          }
+        }
+      }
+      return last;
+    } catch (e) {
+      if (e.name === "AbortError") throw new Error("the Space did not answer in " + Math.round((maxMs || 240000) / 1000) + " s (busy?)");
+      throw e;
+    } finally { clearTimeout(timer); }
+  }
+  async function spaceNarrate(f, prev, seed, onProgress) {
+    if (onProgress) onProgress("waiting for the Space's narrator…");
+    return callSpace("narrate", [JSON.stringify(sheetOf(f)), JSON.stringify((prev || []).slice(-2)), seed >>> 0],
+      (t) => onProgress && onProgress(`the narrator is writing… ${String(t).split(/\s+/).filter(Boolean).length} words`));
+  }
+
   let webllm = null, webllmLoading = null;
   async function callWebLLM(sys, user, seed, onProgress) {
     if (!webllm) {
@@ -200,7 +258,8 @@
       const call = S.narrator === "ollama" ? callOllama : S.narrator === "openai" ? callOpenAI : callWebLLM;
       for (let k = 0; k < 2 && !text; k++) {
         try {
-          const t = clean(await call(SYSTEM, userPrompt(f, prev), hash(key) + 7919 * ((variant || 0) * 3 + k), onProgress));
+          const seed = hash(key) + 7919 * ((variant || 0) * 3 + k);
+          const t = clean(S.narrator === "space" ? await spaceNarrate(f, prev, seed, onProgress) : await call(SYSTEM, userPrompt(f, prev), seed, onProgress));
           if (guard(t, f)) { text = t; source = S.narrator; }
         } catch (e) { error = e.message; break; }
       }
@@ -272,13 +331,19 @@
     const ck = key + ":" + (variant || 0) + ":img";
     const hit = await cacheGet(ck);
     if (hit) return hit;
-    const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/paint", { signal: AbortSignal.timeout(120000),
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: sc.prompt, negative: sc.negative, seed: (sc.seed + 104729 * (variant || 0)) >>> 0, width: 768, height: 512 }),
-    });
-    if (!r.ok) throw new Error("painter " + r.status);
-    const j = await r.json();
-    const val = { img: j.image, prompt: sc.prompt, sc };
+    const seed = (sc.seed + 104729 * (variant || 0)) >>> 0;
+    let img;
+    if (S.painter === "space") img = await callSpace("paint", [sc.prompt, seed], null, 180000);
+    else {
+      const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/paint", { signal: AbortSignal.timeout(120000),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: sc.prompt, negative: sc.negative, seed, width: 768, height: 512 }),
+      });
+      if (!r.ok) throw new Error("painter " + r.status);
+      img = (await r.json()).image;
+    }
+    if (!img) throw new Error("no picture came back");
+    const val = { img, prompt: sc.prompt, sc };
     await cachePut(ck, val);
     return val;
   }
@@ -307,6 +372,15 @@
         return `Ollama wrote a line in ${((Date.now() - t0) / 1000).toFixed(1)} s: "${clean(t).slice(0, 90)}"`;
       } catch (e) { return /fetch|timed? ?out/i.test(e.message) ? "Can't reach Ollama at " + S.ollamaUrl + ". Is it running?" : e.message; }
     }
+    if (S.narrator === "space") {
+      try {
+        const t0 = Date.now();
+        const f = { year: 1850, place: "the Grand Duchy of Finland", name: "Aino Laine", age: 30, gender: "woman", profession: "farmer", class: "working", wealth: "a little saved",
+          health: "good", warmth: "getting by", history: [], happened: ["The rye came in late."], people: [] };
+        const t = await spaceNarrate(f, [], 1, onProgress);
+        return `The Space (${SPACE ? SPACE.narrator : "?"}) wrote a year in ${((Date.now() - t0) / 1000).toFixed(1)} s: "${clean(t).slice(0, 90)}"`;
+      } catch (e) { return "The Space's narrator: " + e.message; }
+    }
     if (S.narrator === "openai") {
       try { const t0 = Date.now(); const t = await callOpenAI("You write one short sentence.", "Write one sentence about rain on a roof.", 1); return `The server wrote a line in ${((Date.now() - t0) / 1000).toFixed(1)} s: "${clean(t).slice(0, 90)}"`; }
       catch (e) { return "Can't get a line from " + S.openaiUrl + ": " + e.message; }
@@ -317,7 +391,16 @@
 
   // the painter test paints one real picture
   async function testPainter(onProgress) {
-    if (S.painter !== "local") return { msg: "Choose Local painter above first." };
+    if (S.painter === "space") {
+      const t0 = Date.now();
+      const tick = setInterval(() => onProgress && onProgress(`the Space is painting… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
+      try {
+        const img = await callSpace("paint", [STYLE + ". a quiet courtyard with a fig tree and a sleeping dog, an old woman shelling peas on a bench, late afternoon light", 7], null, 180000);
+        return { msg: `The Space (${SPACE ? SPACE.painter : "?"}) painted this in ${((Date.now() - t0) / 1000).toFixed(1)} s.`, img };
+      } catch (e) { return { msg: "The Space's painter: " + e.message }; }
+      finally { clearInterval(tick); }
+    }
+    if (S.painter !== "local") return { msg: "Choose a painter above first." };
     const base = S.painterUrl.replace(/\/$/, "");
     let model = "", mem = "";
     const memText = (h) => (h.gpu_total_gb ? ` GPU memory: ${h.gpu_used_gb} of ${h.gpu_total_gb} GB in use (painter, Ollama and everything else).` : "");
@@ -358,6 +441,6 @@
   }
   function stopSpeaking() { if (canSpeak) speechSynthesis.cancel(); }
 
-  const api = { get settings() { return S; }, saveSettings, narrate, paint, scene, templateNarration, guard, cacheGet, cachePut, cacheDropPrefix, unloadNarrator, testNarrator, testPainter, canSpeak, voices, pickVoice, speak, stopSpeaking, DEFAULTS };
+  const api = { get settings() { return S; }, saveSettings, narrate, paint, scene, templateNarration, guard, cacheGet, cachePut, cacheDropPrefix, unloadNarrator, detectSpace, get space() { return SPACE; }, testNarrator, testPainter, canSpeak, voices, pickVoice, speak, stopSpeaking, DEFAULTS };
   root.AI = api;
 })(typeof window !== "undefined" ? window : globalThis);
