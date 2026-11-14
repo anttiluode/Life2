@@ -48,6 +48,19 @@ python local/painter_server.py --model stabilityai/sd-turbo    # smaller, ~3 GB,
 python -m http.server 8000          # then open http://localhost:8000
 ```
 
+**On Windows** the `VAR=value command` form doesn't exist. Ollama usually already runs in the tray, and when the game is opened from `http://localhost:8000` its default settings normally let the page in, so first just try **Test** in the game. If the test can't reach Ollama:
+
+```bat
+:: cmd.exe — quit Ollama from the tray icon first, then:
+set OLLAMA_ORIGINS=*
+ollama serve
+
+:: or make it permanent, then restart the Ollama app from the Start menu:
+setx OLLAMA_ORIGINS "*"
+```
+
+In PowerShell the one-off form is `$env:OLLAMA_ORIGINS="*"; ollama serve`.
+
 In the game, open **AI**, choose Ollama and Local painter, and press **Test**. SDXL-Turbo plus a 7B model may not both fit in 12 GB at once. Ollama unloads idle models after a few minutes, but the comfortable pairing is either `qwen2.5:3b` with SDXL-Turbo, or `qwen2.5:7b` with SD-Turbo.
 
 ## How the numbers behave
