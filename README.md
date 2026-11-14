@@ -1,5 +1,9 @@
 # Life² — Bloodlines
 
+A video on the gameplay especially towards later bit: https://www.youtube.com/live/xlBnmoBj5DA
+
+Game was developed while the video was recorded. Initially there was some AI generation problems. 
+
 ![pic](pic.png)
 
 **A family, through history. Love is still a flux.**
