@@ -300,7 +300,7 @@
   }
   function showNarr(v, key) {
     $("narrText").textContent = v.text;
-    $("narrSrc").textContent = v.source === "template" ? (AI.settings.narrator === "templates" ? "" : "written (the narrator was unavailable or strayed from the facts)") : "narrated by " + v.source + ((variants[key] || 0) ? ` · version ${(variants[key] || 0) + 1}` : "");
+    $("narrSrc").textContent = v.source === "template" ? (AI.settings.narrator === "templates" ? "written narration · turn on a narrator under AI" : "written (the narrator was unavailable or strayed from the facts)") : "narrated by " + v.source + ((variants[key] || 0) ? ` · version ${(variants[key] || 0) + 1}` : "");
   }
   $("narrReroll").onclick = async () => {
     const rec = G.records[G.records.length - 1];
@@ -532,7 +532,10 @@
   }
   $("bSet").onclick = $("bSet2").onclick = openSettings;
   $("setClose").onclick = () => $("settings").classList.add("hidden");
-  $("setSave").onclick = () => { AI.saveSettings(readSettings()); $("settings").classList.add("hidden"); if (G) { render(); showLastPicture(); } };
+  $("setSave").onclick = () => {
+    AI.saveSettings(readSettings()); $("settings").classList.add("hidden");
+    if (G) { render(); showLastPicture(); $("narrSrc").textContent = `narrator: ${AI.settings.narrator} · painter: ${AI.settings.painter === "none" ? "off" : "local"} — takes effect from the next year`; }
+  };
   $("setTest").onclick = async () => { AI.saveSettings(readSettings()); $("testOut").textContent = "Testing…"; const r = await AI.test(); $("testOut").textContent = `Narrator: ${r.narrator}  Painter: ${r.painter}`; };
 
   // ------------------------------------------------------------- start
