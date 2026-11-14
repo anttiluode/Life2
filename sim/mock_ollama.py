@@ -33,6 +33,9 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(n) or b"{}")
+        if self.path.startswith("/api/generate") and req.get("keep_alive") == 0:
+            print("unload", req.get("model"), flush=True)            # the page making room for the painter
+            self._json({"model": req.get("model"), "done": True, "done_reason": "unload"}); return
         user = req["messages"][-1]["content"]
         m = re.search(r"Facts for this year:\n(\{.*\})", user, re.S)
         f = json.loads(m.group(1)) if m else {}

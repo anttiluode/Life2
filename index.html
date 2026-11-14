@@ -186,6 +186,7 @@
         <label><input type="radio" name="paint" value="none"> No pictures</label>
         <label><input type="radio" name="paint" value="local"> Local painter (SDXL-Turbo on your GPU)</label>
         <div class="sub"><input id="pUrl" size="26"></div>
+        <label><input type="checkbox" id="makeRoom"> Make room for the painter: unload the narrator before each picture (one graphics card)</label>
         <pre class="howto">python local/painter_server.py
 :: wait for "painter ready", then test</pre>
         <div class="testRow"><button id="testPaint">Test painter</button><span id="outPaint" class="dim small"></span></div>

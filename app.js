@@ -287,15 +287,20 @@
 
   // One queue for everything that uses the GPU: the narrator and the painter never run at the same
   // time, so on one graphics card they don't fight over memory. Narration goes first.
-  let gpu = Promise.resolve();
-  function onGpu(fn) { const p = gpu.then(fn); gpu = p.catch(() => {}); return p; }
+  let gpu = Promise.resolve(), gpuJob = null;
+  function onGpu(fn, job) {
+    const p = gpu.then(() => { gpuJob = job; return fn(); }).finally(() => { gpuJob = null; });
+    gpu = p.catch(() => {});
+    return p;
+  }
   function narrateRecord(rec) {
     if (!rec || !rec.facts) return;
     const key = `${saveId}:${rec.gen}:${rec.year}`;
     currentKey = key;
-    $("narrSrc").textContent = AI.settings.narrator === "templates" ? "" : "the narrator is writing…";
+    $("narrSrc").textContent = AI.settings.narrator === "templates" ? "" : gpuJob === "paint" ? "the narrator waits for the painter…" : "the narrator is writing…";
     const prev = lastTexts.slice(-2);
-    onGpu(() => AI.narrate(key, rec.facts, prev, variants[key] || 0, (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }))
+    onGpu(() => { if (currentKey === key && AI.settings.narrator !== "templates") $("narrSrc").textContent = "the narrator is writing…";
+      return AI.narrate(key, rec.facts, prev, variants[key] || 0, (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }); }, "narrate")
       .then((v) => {
         lastTexts.push(v.text); if (lastTexts.length > 4) lastTexts.shift();
         if (currentKey === key) { showNarr(v, key); AI.speak(v.text); }
@@ -311,7 +316,7 @@
     const key = `${saveId}:${rec.gen}:${rec.year}`;
     setVariant(key, (variants[key] || 0) + 1);
     currentKey = key; $("narrSrc").textContent = "retelling…";
-    const v = await onGpu(() => AI.narrate(key, rec.facts, lastTexts.slice(-3, -1), variants[key], (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }));
+    const v = await onGpu(() => AI.narrate(key, rec.facts, lastTexts.slice(-3, -1), variants[key], (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }), "narrate");
     if (currentKey === key) { showNarr(v, key); AI.speak(v.text); }
   };
 
@@ -337,7 +342,7 @@
       const key = milestoneKey(m), sc = AI.scene(G, m);      // the scene is fixed now, while this life is current
       if (!sc) continue;
       saveJSON("life2.painted." + saveId, Object.assign(loadJSON("life2.painted." + saveId, {}), { [key]: { year: m.year, gen: m.gen, cap: caption(m) } }));
-      onGpu(() => AI.paint(key, sc, variants[key] || 0)).then((v) => { if (v) showPolaroid(v.img, caption(m), key, m, sc); })
+      onGpu(async () => { if (AI.settings.makeRoom) await AI.unloadNarrator(); return AI.paint(key, sc, variants[key] || 0); }, "paint").then((v) => { if (v) showPolaroid(v.img, caption(m), key, m, sc); })
         .catch((e) => { $("narrSrc").textContent = "painter unavailable: " + e.message; });
     }
   }
@@ -351,7 +356,7 @@
     setVariant(polKey, (variants[polKey] || 0) + 1);
     $("polCap").textContent = "painting again…";
     const key = polKey, m = polMilestone, sc = polScene, cap = polCap;
-    try { const v = await onGpu(() => AI.paint(key, sc, variants[key])); if (v) showPolaroid(v.img, cap, key, m, sc); } catch (e) { $("polCap").textContent = "painter unavailable: " + e.message; }
+    try { const v = await onGpu(async () => { if (AI.settings.makeRoom) await AI.unloadNarrator(); return AI.paint(key, sc, variants[key]); }, "paint"); if (v) showPolaroid(v.img, cap, key, m, sc); } catch (e) { $("polCap").textContent = "painter unavailable: " + e.message; }
   };
 
   // ------------------------------------------------------------- years
@@ -537,7 +542,7 @@
     document.querySelectorAll("input[name=narr]").forEach((r) => (r.checked = r.value === s.narrator));
     document.querySelectorAll("input[name=paint]").forEach((r) => (r.checked = r.value === s.painter));
     $("olUrl").value = s.ollamaUrl; $("olModel").value = s.ollamaModel; $("oaUrl").value = s.openaiUrl; $("oaModel").value = s.openaiModel; $("pUrl").value = s.painterUrl;
-    $("vOn").checked = s.voice === "on"; $("vRate").value = s.voiceRate; $("vRateOut").textContent = (+s.voiceRate).toFixed(2) + "×";
+    $("makeRoom").checked = !!s.makeRoom; $("vOn").checked = s.voice === "on"; $("vRate").value = s.voiceRate; $("vRateOut").textContent = (+s.voiceRate).toFixed(2) + "×";
     fillVoices();
     ["outNarr", "outPaint", "outVoice"].forEach((id) => ($(id).textContent = ""));
     $("paintTestImg").classList.add("hidden");
@@ -546,7 +551,7 @@
   function readSettings() {
     return { narrator: (document.querySelector("input[name=narr]:checked") || {}).value || "templates", painter: (document.querySelector("input[name=paint]:checked") || {}).value || "none",
       ollamaUrl: $("olUrl").value.trim(), ollamaModel: $("olModel").value.trim(), openaiUrl: $("oaUrl").value.trim(), openaiModel: $("oaModel").value.trim(), painterUrl: $("pUrl").value.trim(),
-      voice: $("vOn").checked ? "on" : "off", voiceName: $("vName").value, voiceRate: +$("vRate").value };
+      makeRoom: $("makeRoom").checked, voice: $("vOn").checked ? "on" : "off", voiceName: $("vName").value, voiceRate: +$("vRate").value };
   }
   $("bSet").onclick = $("bSet2").onclick = openSettings;
   $("setClose").onclick = () => $("settings").classList.add("hidden");

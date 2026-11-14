@@ -4,6 +4,7 @@ Life2 local painter: text-to-image on your own GPU, for the game page to call.
     pip install torch diffusers transformers accelerate pillow
     python local/painter_server.py                 # SDXL-Turbo, port 7861
     python local/painter_server.py --model stabilityai/sd-turbo      # smaller, faster
+    python local/painter_server.py --vae tiny      # tiny decoder: fastest, least memory, a bit softer
     python local/painter_server.py --mock          # no GPU: placeholder pictures, for testing
 
 The game (Settings -> Painter -> Local) sends POST /paint with
@@ -29,14 +30,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Lock()
 LAST = [None]          # seconds the last picture took
+TIMES = [None]         # (denoising seconds, decoding seconds) of the last picture
 PIPE = None
 ARGS = None
 
 
-def load(model):
+def load(model, vae_kind):
     import torch
     from diffusers import AutoPipelineForText2Image
-    pipe = AutoPipelineForText2Image.from_pretrained(model, torch_dtype=torch.float16, variant="fp16")
+    extra = {}
+    xl = "xl" in model.lower()
+    if xl and vae_kind == "fix":
+        # The stock SDXL VAE overflows in fp16, so diffusers moves it to fp32 for every picture.
+        # That costs time and ~2 GB more memory exactly when the card is fullest. This VAE is
+        # the same one retrained to be stable in fp16 (madebyollin/sdxl-vae-fp16-fix, ~170 MB).
+        from diffusers import AutoencoderKL
+        extra["vae"] = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16)
+    pipe = AutoPipelineForText2Image.from_pretrained(model, torch_dtype=torch.float16, variant="fp16", **extra)
+    if vae_kind == "tiny":
+        # TAESD: a tiny decoder, milliseconds and almost no memory, slightly softer pictures
+        from diffusers import AutoencoderTiny
+        pipe.vae = AutoencoderTiny.from_pretrained("madebyollin/taesdxl" if xl else "madebyollin/taesd", torch_dtype=torch.float16)
     pipe.to("cuda")
     try:
         pipe.enable_vae_slicing()
@@ -51,9 +65,19 @@ def paint_real(req):
     h = int(req.get("height", 512)) // 8 * 8
     g = torch.Generator("cuda").manual_seed(int(req.get("seed", 0)) % (2 ** 31))
     turbo = "turbo" in ARGS.model
+    marks = {}
+
+    def stepped(pipe, i, t, kw):          # notes when the last denoising step ends; the rest is decoding
+        marks["steps"] = time.time()
+        return kw
+
+    t0 = time.time()
     img = PIPE(prompt=req["prompt"], negative_prompt=None if turbo else req.get("negative"),
                num_inference_steps=ARGS.steps, guidance_scale=0.0 if turbo else 6.0,
-               width=w, height=h, generator=g).images[0]
+               width=w, height=h, generator=g, callback_on_step_end=stepped).images[0]
+    t1 = time.time()
+    TIMES[0] = (marks.get("steps", t1) - t0, t1 - marks.get("steps", t1))
+    torch.cuda.empty_cache()              # give the memory back between pictures, so the narrator fits
     return img
 
 
@@ -127,10 +151,12 @@ class Handler(BaseHTTPRequestHandler):
                 dt = time.time() - t0
                 LAST[0] = round(dt, 1)
             mem = None if ARGS.mock else gpu_memory()
-            note = f"painted in {dt:.1f} s" + (f", GPU memory {mem[0]} of {mem[1]} GB in use" if mem else "")
+            parts = f" (steps {TIMES[0][0]:.1f} s, decode {TIMES[0][1]:.1f} s)" if TIMES[0] and not ARGS.mock else ""
+            note = f"painted in {dt:.1f} s{parts}" + (f", GPU memory {mem[0]} of {mem[1]} GB in use" if mem else "")
             if dt > 8 and not ARGS.mock:
                 note += ("  <-- SLOW: the card is probably out of memory and borrowing system RAM. "
-                         "Use a smaller narrator (qwen2.5:3b) or restart this with --model stabilityai/sd-turbo")
+                         "Tick 'make room for the painter' in the game's AI settings, use a smaller narrator "
+                         "(qwen2.5:3b), or restart this with --vae tiny or --model stabilityai/sd-turbo")
             print(note, flush=True)
             if img is None:
                 return self._json(500, {"error": "could not draw (install pillow for --mock)"})
@@ -165,11 +191,13 @@ def main():
     ap.add_argument("--model", default="stabilityai/sdxl-turbo")
     ap.add_argument("--steps", type=int, default=2)
     ap.add_argument("--port", type=int, default=7861)
+    ap.add_argument("--vae", choices=["fix", "tiny", "stock"], default="fix",
+                    help="fix: fp16-safe SDXL decoder (default); tiny: TAESD, fastest and smallest; stock: the model's own")
     ap.add_argument("--mock", action="store_true")
     ARGS = ap.parse_args()
     if not ARGS.mock:
         print(f"loading {ARGS.model} ...", flush=True)
-        PIPE = load(ARGS.model)
+        PIPE = load(ARGS.model, ARGS.vae)
         mem = gpu_memory()
         if mem:
             print(f"GPU memory {mem[0]} of {mem[1]} GB in use (all programs)", flush=True)

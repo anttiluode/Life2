@@ -23,7 +23,7 @@
     narrator: "templates", ollamaUrl: "http://localhost:11434", ollamaModel: "qwen2.5:7b",
     openaiUrl: "http://localhost:8080", openaiModel: "local", webllmModel: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     painter: "none", painterUrl: "http://localhost:7861", paintEvery: "milestones",
-    voice: "off", voiceName: "", voiceRate: 0.95,
+    voice: "off", voiceName: "", voiceRate: 0.95, makeRoom: true,
   };
   function loadSettings() {
     try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem("life2.ai") || "{}")); }
@@ -272,7 +272,7 @@
     const ck = key + ":" + (variant || 0) + ":img";
     const hit = await cacheGet(ck);
     if (hit) return hit;
-    const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/paint", { signal: AbortSignal.timeout(180000),
+    const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/paint", { signal: AbortSignal.timeout(120000),
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: sc.prompt, negative: sc.negative, seed: (sc.seed + 104729 * (variant || 0)) >>> 0, width: 768, height: 512 }),
     });
@@ -281,6 +281,16 @@
     const val = { img: j.image, prompt: sc.prompt, sc };
     await cachePut(ck, val);
     return val;
+  }
+
+  // Ollama keeps a model in graphics memory for minutes after use. On one card that crowds the
+  // painter out, so before a picture the narrator can be unloaded; it reloads for the next year.
+  async function unloadNarrator() {
+    if (S.narrator !== "ollama") return;
+    try {
+      await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/generate", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: S.ollamaModel, keep_alive: 0 }), signal: AbortSignal.timeout(10000) });
+    } catch (e) {}
   }
 
   // the narrator test writes one real sentence, so it proves generation works, not only that the server is up
@@ -313,18 +323,19 @@
     const memText = (h) => (h.gpu_total_gb ? ` GPU memory: ${h.gpu_used_gb} of ${h.gpu_total_gb} GB in use (painter, Ollama and everything else).` : "");
     try { const r = await fetch(base + "/health", { signal: AbortSignal.timeout(5000) }); model = (await r.json()).model || ""; }
     catch (e) { return { msg: `Can't reach the painter at ${S.painterUrl}. Still loading? Wait for "painter ready" in its window.` }; }
+    if (S.makeRoom) { onProgress && onProgress("making room: unloading the narrator…"); await unloadNarrator(); }
     const t0 = Date.now();
     const tick = setInterval(() => onProgress && onProgress(`${model} is painting… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
     try {
-      const r = await fetch(base + "/paint", { signal: AbortSignal.timeout(180000), method: "POST", headers: { "Content-Type": "application/json" },
+      const r = await fetch(base + "/paint", { signal: AbortSignal.timeout(120000), method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: STYLE + ". a quiet courtyard with a fig tree and a sleeping dog, an old woman shelling peas on a bench, late afternoon light", negative: NEG, seed: 7, width: 768, height: 512 }) });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
       const secs = (Date.now() - t0) / 1000;
       try { mem = memText(await (await fetch(base + "/health", { signal: AbortSignal.timeout(5000) })).json()); } catch (e) {}
-      const slow = secs > 8 ? " That is slow: the card is probably full and borrowing system RAM. Try qwen2.5:3b as the narrator, or the painter with --model stabilityai/sd-turbo." : "";
+      const slow = secs > 8 ? " That is slow: the card is probably full and borrowing system RAM. Tick ‘make room for the painter’, try qwen2.5:3b as the narrator, or start the painter with --vae tiny." : "";
       return { msg: `${model} painted this in ${secs.toFixed(1)} s.${mem}${slow}`, img: j.image };
-    } catch (e) { return { msg: "The painter answered but could not paint: " + (e.name === "TimeoutError" ? "no picture in 180 s (GPU busy?)" : e.message) }; }
+    } catch (e) { return { msg: "The painter answered but could not paint: " + (e.name === "TimeoutError" ? "no picture in 120 s (GPU busy?)" : e.message) }; }
     finally { clearInterval(tick); }
   }
 
@@ -347,6 +358,6 @@
   }
   function stopSpeaking() { if (canSpeak) speechSynthesis.cancel(); }
 
-  const api = { get settings() { return S; }, saveSettings, narrate, paint, scene, templateNarration, guard, cacheGet, cachePut, cacheDropPrefix, testNarrator, testPainter, canSpeak, voices, pickVoice, speak, stopSpeaking, DEFAULTS };
+  const api = { get settings() { return S; }, saveSettings, narrate, paint, scene, templateNarration, guard, cacheGet, cachePut, cacheDropPrefix, unloadNarrator, testNarrator, testPainter, canSpeak, voices, pickVoice, speak, stopSpeaking, DEFAULTS };
   root.AI = api;
 })(typeof window !== "undefined" ? window : globalThis);
