@@ -1,5 +1,7 @@
 # Life² — Bloodlines
 
+![pic](pic.png)
+
 **A family, through history. Love is still a flux.**
 
 You live one life at a time, from 18 until it ends. Every year you have a few drops of attention to pour into the people around you, your work, yourself, a dream. Whatever you stop feeding withers by itself. That is the vine economy from [LifeSucks](https://github.com/anttiluode/LifeSucks) and [Elävä Matriisi](https://github.com/anttiluode/ElavaMatriisiClaude).
