@@ -137,7 +137,7 @@
     try {
       const r = await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.signal,
-        body: JSON.stringify({ model: S.ollamaModel, stream: true, keep_alive: "30m", messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+        body: JSON.stringify({ model: S.ollamaModel, stream: true, messages: [{ role: "system", content: sys }, { role: "user", content: user }],
           options: { temperature: 0.85, seed, num_predict: opts.maxTokens || 180 } }),
       });
       if (!r.ok) { let m = ""; try { m = (await r.json()).error || ""; } catch (e) {} throw new Error("Ollama " + r.status + (m ? ": " + m : "")); }
@@ -214,28 +214,30 @@
   }
 
   // ---------------------------------------------------------------- the painter
-  const STYLE = "gouache painting, picture-book illustration, visible brush texture, soft edges, muted earthy palette, quiet composition, no text, no letters";
+  // The image models read only the first 77 CLIP tokens and drop the rest, so the prompt goes in order of
+  // importance: style first (so it is never lost), then the people and the scene, then the place, then the light.
+  const STYLE = "gouache picture-book painting, soft brush texture, muted earthy colours";
   const NEG = "text, letters, watermark, signature, photo, 3d render, deformed hands, extra fingers, gore, nudity";
 
-  function personDesc(look, age, gender) {
+  function personDesc(look, age, gender, short) {
     const who = age < 3 ? "a baby" : age < 13 ? `a ${age}-year-old ${gender === "m" ? "boy" : "girl"}` : `a ${age}-year-old ${gender === "m" ? "man" : "woman"}`;
     if (!look || age < 3) return who;
     const hair = age > 65 ? "grey " + look.hair.replace(/ hair$/, "") + " hair" : look.hair;
-    return `${who} with ${hair}, ${look.build}, ${look.detail}`;
+    return short ? `${who}, ${hair}, ${look.detail}` : `${who}, ${hair}, ${look.build}, ${look.detail}`;
   }
 
   // what to paint for a milestone, in words
   function scene(G, m) {
     const life = G.life;
     const look = H.REGIONS[m.place || G.region].look(m.year);
-    const me = personDesc(life.look, m.year - life.born, life.gender);
+    const me = personDesc(life.look, m.year - life.born, life.gender, m.kind === "partner");
     const other = (name) => {
       const c = life.channels.find((x) => x.name === name);
       if (!c) return name ? "another person" : "";
       const a = c.kind === "child" ? m.year - c.birthYear : c.theirAge != null ? c.theirAge - (G.year - m.year) : 30;
-      return personDesc(c.look, Math.max(0, a), c.gender);
+      return personDesc(c.look, Math.max(0, a), c.gender, true);
     };
-    const warm = life.warmth > 55 ? "warm golden lamplight, a lived-in cluttered room" : life.warmth > 30 ? "plain daylight, an ordinary room" : "cold blue-grey light, a bare and empty room, long shadows";
+    const warm = life.warmth > 55 ? "warm golden lamplight" : life.warmth > 30 ? "plain daylight" : "cold blue-grey light, long shadows";
     const s = {
       begin: `${me} standing at the door of the family home at dawn, about to leave`,
       partner: `${me} and ${other(m.who[1])} together, close, early in their life together`,
@@ -260,24 +262,23 @@
         flavor: "people gathered in a town square talking about the news" }[m.type] || "a town square",
     }[m.kind];
     if (!s) return null;
-    return { prompt: `${s}. Setting: ${look}. ${m.kind === "death" || m.kind === "history" ? "" : warm + ". "}${STYLE}`,
+    const place = look.split(", ").slice(0, 3).join(", ");
+    return { prompt: `${STYLE}. ${s}. ${place}${m.kind === "death" || m.kind === "history" ? "" : ", " + warm}`,
       negative: NEG, seed: ((life.look && life.look.seed) || 1) ^ hash(m.kind + m.year) };
   }
 
-  async function paint(key, G, m, variant) {
-    if (S.painter === "none") return null;
+  async function paint(key, sc, variant) {
+    if (S.painter === "none" || !sc) return null;
     const ck = key + ":" + (variant || 0) + ":img";
     const hit = await cacheGet(ck);
     if (hit) return hit;
-    const sc = scene(G, m);
-    if (!sc) return null;
     const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/paint", { signal: AbortSignal.timeout(180000),
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: sc.prompt, negative: sc.negative, seed: (sc.seed + 104729 * (variant || 0)) >>> 0, width: 768, height: 512 }),
     });
     if (!r.ok) throw new Error("painter " + r.status);
     const j = await r.json();
-    const val = { img: j.image, prompt: sc.prompt };
+    const val = { img: j.image, prompt: sc.prompt, sc };
     await cachePut(ck, val);
     return val;
   }
@@ -308,17 +309,21 @@
   async function testPainter(onProgress) {
     if (S.painter !== "local") return { msg: "Choose Local painter above first." };
     const base = S.painterUrl.replace(/\/$/, "");
-    let model = "";
+    let model = "", mem = "";
+    const memText = (h) => (h.gpu_total_gb ? ` GPU memory: ${h.gpu_used_gb} of ${h.gpu_total_gb} GB in use (painter, Ollama and everything else).` : "");
     try { const r = await fetch(base + "/health", { signal: AbortSignal.timeout(5000) }); model = (await r.json()).model || ""; }
     catch (e) { return { msg: `Can't reach the painter at ${S.painterUrl}. Still loading? Wait for "painter ready" in its window.` }; }
     const t0 = Date.now();
     const tick = setInterval(() => onProgress && onProgress(`${model} is painting… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
     try {
       const r = await fetch(base + "/paint", { signal: AbortSignal.timeout(180000), method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: "a quiet courtyard with a fig tree and a sleeping dog, an old woman shelling peas on a bench, late afternoon light. " + STYLE, negative: NEG, seed: 7, width: 768, height: 512 }) });
+        body: JSON.stringify({ prompt: STYLE + ". a quiet courtyard with a fig tree and a sleeping dog, an old woman shelling peas on a bench, late afternoon light", negative: NEG, seed: 7, width: 768, height: 512 }) });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
-      return { msg: `${model} painted this in ${((Date.now() - t0) / 1000).toFixed(1)} s.`, img: j.image };
+      const secs = (Date.now() - t0) / 1000;
+      try { mem = memText(await (await fetch(base + "/health", { signal: AbortSignal.timeout(5000) })).json()); } catch (e) {}
+      const slow = secs > 8 ? " That is slow: the card is probably full and borrowing system RAM. Try qwen2.5:3b as the narrator, or the painter with --model stabilityai/sd-turbo." : "";
+      return { msg: `${model} painted this in ${secs.toFixed(1)} s.${mem}${slow}`, img: j.image };
     } catch (e) { return { msg: "The painter answered but could not paint: " + (e.name === "TimeoutError" ? "no picture in 180 s (GPU busy?)" : e.message) }; }
     finally { clearInterval(tick); }
   }

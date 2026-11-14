@@ -70,7 +70,14 @@ In PowerShell the one-off form is `$env:OLLAMA_ORIGINS="*"; ollama serve`.
 
 In the game, open **AI**, choose Ollama and Local painter, and use the three test buttons, then **Save**. **Test narrator** writes one real sentence, **Test painter** paints one real picture and shows it, **Test voice** reads a line aloud. The page talks to Ollama (11434) and the painter (7861) directly, so after the page loads, nothing more shows up in the `http.server` window. That is normal.
 
-If the narration says *written instead: no answer from Ollama…*, the model didn't produce a word within 150 seconds. Usually the GPU is full: the painter is loading at the same time. `ollama ps` shows whether the model sits on GPU or CPU. Wait for `painter ready`, then press **retell**. SDXL-Turbo plus a 7B model may not both fit in 12 GB at once. Ollama unloads idle models after a few minutes, but the comfortable pairing is either `qwen2.5:3b` with SDXL-Turbo, or `qwen2.5:7b` with SD-Turbo.
+If the narration says *written instead: no answer from Ollama…*, the model didn't produce a word within 150 seconds. Usually the GPU is full: the painter is loading at the same time. `ollama ps` shows whether the model sits on GPU or CPU. Wait for `painter ready`, then press **retell**. **The narrator and the painter share one graphics card.** The game never runs them at the same time: one queue, narration first, and after several years at once only the two most important pictures. But both models still sit in memory, and SDXL-Turbo (~7 GB) plus `qwen2.5:7b` (~5 GB) plus Windows itself is more than 12 GB. When that happens, Windows quietly lends the card system RAM and a picture goes from about 1.5 s to 25 s or more. The painter window prints the time and GPU memory for every picture and flags the slow ones, and **Test painter** shows the same. The pairs that fit:
+
+| painter | narrator | |
+|---|---|---|
+| SDXL-Turbo (default) | `qwen2.5:3b` | nicer pictures, plainer prose |
+| `--model stabilityai/sd-turbo` | `qwen2.5:7b` | better prose, softer 512-px-style pictures |
+
+Prompts are written for the image models' 77-token limit: style first, then the people and the scene, then the place, then the light. If anything is cut, it is the light.
 
 ## How the numbers behave
 

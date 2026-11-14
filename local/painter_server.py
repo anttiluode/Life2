@@ -12,6 +12,11 @@ and gets back {"image": "data:image/png;base64,..."}.
 
 SDXL-Turbo at 768x512 with 2 steps takes about 1-2 s on an RTX 3060 (12 GB) in fp16.
 Only one image is made at a time; requests queue.
+
+The narrator (Ollama) shares the same graphics card. If both models don't fit in its memory,
+Windows quietly lends the GPU system RAM and painting becomes 10-20x slower. The server times
+every picture and says so when that happens. Comfortable pairs on 12 GB:
+    SDXL-Turbo (~7 GB) + qwen2.5:3b (~2.5 GB)      or      SD-Turbo (~3 GB) + qwen2.5:7b (~5 GB)
 """
 import argparse
 import base64
@@ -19,9 +24,11 @@ import io
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Lock()
+LAST = [None]          # seconds the last picture took
 PIPE = None
 ARGS = None
 
@@ -50,6 +57,16 @@ def paint_real(req):
     return img
 
 
+def gpu_memory():
+    """(used GB, total GB) for the whole card, all programs together, or None."""
+    try:
+        import torch
+        free, total = torch.cuda.mem_get_info()
+        return round((total - free) / 2**30, 1), round(total / 2**30, 1)
+    except Exception:
+        return None
+
+
 def paint_mock(req):
     """A soft placeholder picture that still changes with the prompt and seed."""
     try:
@@ -69,7 +86,7 @@ def paint_mock(req):
         r = 30 + hsh[(k + 7) % 32] / 255 * 120
         c = tuple(max(0, min(255, base[i] + (hsh[(k * 3 + i) % 32] - 128) // 3)) for i in range(3))
         d.ellipse([x - r, y - r, x + r, y + r], fill=c)
-    text = req["prompt"].split(". Setting")[0][:90]
+    text = ". ".join(req["prompt"].split(". ")[1:])[:90]
     d.rectangle([0, h - 40, w, h], fill=(20, 22, 20))
     d.text((12, h - 30), "mock painter: " + text, fill=(230, 220, 200))
     return img
@@ -90,7 +107,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/health"):
-            self._json(200, {"ok": True, "model": "mock" if ARGS.mock else ARGS.model})
+            mem = None if ARGS.mock else gpu_memory()
+            self._json(200, {"ok": True, "model": "mock" if ARGS.mock else ARGS.model,
+                             "gpu_used_gb": mem and mem[0], "gpu_total_gb": mem and mem[1], "last_seconds": LAST[0]})
         else:
             self._json(404, {"error": "not found"})
 
@@ -103,15 +122,29 @@ class Handler(BaseHTTPRequestHandler):
             if not req.get("prompt"):
                 return self._json(400, {"error": "prompt missing"})
             with LOCK:
+                t0 = time.time()
                 img = paint_mock(req) if ARGS.mock else paint_real(req)
+                dt = time.time() - t0
+                LAST[0] = round(dt, 1)
+            mem = None if ARGS.mock else gpu_memory()
+            note = f"painted in {dt:.1f} s" + (f", GPU memory {mem[0]} of {mem[1]} GB in use" if mem else "")
+            if dt > 8 and not ARGS.mock:
+                note += ("  <-- SLOW: the card is probably out of memory and borrowing system RAM. "
+                         "Use a smaller narrator (qwen2.5:3b) or restart this with --model stabilityai/sd-turbo")
+            print(note, flush=True)
             if img is None:
                 return self._json(500, {"error": "could not draw (install pillow for --mock)"})
             buf = io.BytesIO()
             img.save(buf, format="PNG" if ARGS.mock else "JPEG", quality=90)
             mime = "png" if ARGS.mock else "jpeg"
-            self._json(200, {"image": f"data:image/{mime};base64," + base64.b64encode(buf.getvalue()).decode()})
+            self._json(200, {"image": f"data:image/{mime};base64," + base64.b64encode(buf.getvalue()).decode(), "seconds": LAST[0]})
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            print("the game stopped waiting for this picture (it gives up after 3 minutes)", flush=True)
         except Exception as e:  # report, don't crash the server
-            self._json(500, {"error": str(e)})
+            try:
+                self._json(500, {"error": str(e)})
+            except OSError:
+                pass
 
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -137,6 +170,9 @@ def main():
     if not ARGS.mock:
         print(f"loading {ARGS.model} ...", flush=True)
         PIPE = load(ARGS.model)
+        mem = gpu_memory()
+        if mem:
+            print(f"GPU memory {mem[0]} of {mem[1]} GB in use (all programs)", flush=True)
     print(f"painter ready on http://localhost:{ARGS.port} ({'mock' if ARGS.mock else ARGS.model})", flush=True)
     ThreadingHTTPServer(("127.0.0.1", ARGS.port), Handler).serve_forever()
 

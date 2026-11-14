@@ -285,14 +285,17 @@
     if (!G.life.alive || G.waitingHeir || G.over) setTimeout(showDeath, 900);
   }
 
-  let narrQueue = Promise.resolve();
+  // One queue for everything that uses the GPU: the narrator and the painter never run at the same
+  // time, so on one graphics card they don't fight over memory. Narration goes first.
+  let gpu = Promise.resolve();
+  function onGpu(fn) { const p = gpu.then(fn); gpu = p.catch(() => {}); return p; }
   function narrateRecord(rec) {
     if (!rec || !rec.facts) return;
     const key = `${saveId}:${rec.gen}:${rec.year}`;
     currentKey = key;
     $("narrSrc").textContent = AI.settings.narrator === "templates" ? "" : "the narrator is writing…";
     const prev = lastTexts.slice(-2);
-    narrQueue = narrQueue.then(() => AI.narrate(key, rec.facts, prev, variants[key] || 0, (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }))
+    onGpu(() => AI.narrate(key, rec.facts, prev, variants[key] || 0, (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }))
       .then((v) => {
         lastTexts.push(v.text); if (lastTexts.length > 4) lastTexts.shift();
         if (currentKey === key) { showNarr(v, key); AI.speak(v.text); }
@@ -308,7 +311,7 @@
     const key = `${saveId}:${rec.gen}:${rec.year}`;
     setVariant(key, (variants[key] || 0) + 1);
     currentKey = key; $("narrSrc").textContent = "retelling…";
-    const v = await AI.narrate(key, rec.facts, lastTexts.slice(-3, -1), variants[key], (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; });
+    const v = await onGpu(() => AI.narrate(key, rec.facts, lastTexts.slice(-3, -1), variants[key], (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }));
     if (currentKey === key) { showNarr(v, key); AI.speak(v.text); }
   };
 
@@ -321,7 +324,6 @@
       death: `the funeral of ${who}`, history: m.title }[m.kind] || m.kind;
     return `${E.fmtYear(m.year)} · ${t}`;
   }
-  let paintQueue = Promise.resolve();
   function paintNewMilestones() {
     const fresh = G.milestones.slice(seenMilestones);
     seenMilestones = G.milestones.length;
@@ -329,22 +331,27 @@
     // one picture per year: the most important thing that happened
     const byYear = {};
     for (const m of fresh) if (PAINT_PRIORITY[m.kind] && (!byYear[m.year] || PAINT_PRIORITY[m.kind] > PAINT_PRIORITY[byYear[m.year].kind])) byYear[m.year] = m;
-    for (const m of Object.values(byYear)) {
-      const key = milestoneKey(m);
+    // after several years at once, paint only the two that matter most, so pictures don't pile up
+    const picks = Object.values(byYear).sort((a, b) => PAINT_PRIORITY[b.kind] - PAINT_PRIORITY[a.kind] || a.year - b.year).slice(0, 2).sort((a, b) => a.year - b.year);
+    for (const m of picks) {
+      const key = milestoneKey(m), sc = AI.scene(G, m);      // the scene is fixed now, while this life is current
+      if (!sc) continue;
       saveJSON("life2.painted." + saveId, Object.assign(loadJSON("life2.painted." + saveId, {}), { [key]: { year: m.year, gen: m.gen, cap: caption(m) } }));
-      paintQueue = paintQueue.then(() => AI.paint(key, G, m, variants[key] || 0)).then((v) => { if (v) showPolaroid(v.img, caption(m), key, m); })
+      onGpu(() => AI.paint(key, sc, variants[key] || 0)).then((v) => { if (v) showPolaroid(v.img, caption(m), key, m, sc); })
         .catch((e) => { $("narrSrc").textContent = "painter unavailable: " + e.message; });
     }
   }
-  function showPolaroid(img, cap, key, m) {
-    $("polImg").src = img; $("polCap").textContent = cap; polKey = key; polMilestone = m;
+  let polScene = null, polCap = "";
+  function showPolaroid(img, cap, key, m, sc) {
+    $("polImg").src = img; $("polCap").textContent = cap; polKey = key; polMilestone = m; polScene = sc || null; polCap = cap;
     $("polaroid").classList.remove("hidden");
   }
   $("polReroll").onclick = async () => {
-    if (!polKey || !polMilestone) return;
+    if (!polKey || !polScene) return;
     setVariant(polKey, (variants[polKey] || 0) + 1);
     $("polCap").textContent = "painting again…";
-    try { const v = await AI.paint(polKey, G, polMilestone, variants[polKey]); if (v) showPolaroid(v.img, caption(polMilestone), polKey, polMilestone); } catch (e) { $("polCap").textContent = "painter unavailable"; }
+    const key = polKey, m = polMilestone, sc = polScene, cap = polCap;
+    try { const v = await onGpu(() => AI.paint(key, sc, variants[key])); if (v) showPolaroid(v.img, cap, key, m, sc); } catch (e) { $("polCap").textContent = "painter unavailable: " + e.message; }
   };
 
   // ------------------------------------------------------------- years
@@ -480,7 +487,7 @@
   async function showLastPicture() {
     if (AI.settings.painter === "none") return;
     const painted = Object.entries(loadJSON("life2.painted." + saveId, {})).sort((a, b) => b[1].year - a[1].year);
-    for (const [k, p] of painted) { const im = await AI.cacheGet(k + ":" + (variants[k] || 0) + ":img"); if (im) { showPolaroid(im.img, p.cap, k, null); return; } }
+    for (const [k, p] of painted) { const im = await AI.cacheGet(k + ":" + (variants[k] || 0) + ":img"); if (im) { showPolaroid(im.img, p.cap, k, null, im.sc); return; } }
   }
   function renderSaves() {
     const s = Object.values(allSaves()).sort((a, b) => b.updated - a.updated);
