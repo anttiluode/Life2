@@ -138,6 +138,13 @@ li.fading .bond i { background: var(--loss); }
 .setGrid label { display: block; margin: 6px 0; font-size: 13px; }
 .setGrid .sub { margin: 2px 0 8px 22px; display: flex; gap: 6px; align-items: center; color: var(--dim); font-size: 12px; flex-wrap: wrap; }
 .setGrid .sub input { padding: 4px 8px; font-size: 12px; }
+.setGrid .sub select { max-width: 260px; padding: 3px 6px; font-size: 12px; background: var(--bg, #0c110e); color: inherit; border: 1px solid var(--line); border-radius: 6px; }
+.setGrid h4 + label, .setGrid h4 { margin-top: 14px; }
+.testRow { display: flex; gap: 10px; align-items: center; margin: 8px 0 4px; }
+.testRow button { flex: none; padding: 4px 10px; font-size: 12px; }
+.testRow span { line-height: 1.4; }
+.testImg { display: block; width: 100%; max-width: 384px; margin-top: 8px; border-radius: 6px; border: 1px solid var(--line); }
+#narrVoice.on { color: var(--warm, #e8c47a); border-color: currentColor; }
 .howto { background: #0b100d; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px; color: #c9c5b8; white-space: pre-wrap; }
 
 @media (max-width: 900px) {

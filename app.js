@@ -295,7 +295,7 @@
     narrQueue = narrQueue.then(() => AI.narrate(key, rec.facts, prev, variants[key] || 0, (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; }))
       .then((v) => {
         lastTexts.push(v.text); if (lastTexts.length > 4) lastTexts.shift();
-        if (currentKey === key) showNarr(v, key);
+        if (currentKey === key) { showNarr(v, key); AI.speak(v.text); }
       }).catch(() => {});
   }
   function showNarr(v, key) {
@@ -309,7 +309,7 @@
     setVariant(key, (variants[key] || 0) + 1);
     currentKey = key; $("narrSrc").textContent = "retelling…";
     const v = await AI.narrate(key, rec.facts, lastTexts.slice(-3, -1), variants[key], (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; });
-    if (currentKey === key) showNarr(v, key);
+    if (currentKey === key) { showNarr(v, key); AI.speak(v.text); }
   };
 
   const PAINT_PRIORITY = { death: 9, heir: 8, birth: 7, partner: 7, migration: 6, war: 6, widowed: 6, fall: 5, rise: 5, quiet: 5, house: 4, history: 3, begin: 2 };
@@ -518,25 +518,69 @@
   };
 
   // ------------------------------------------------------------- AI settings
+  function fillVoices() {
+    const sel = $("vName"), cur = AI.settings.voiceName || (AI.pickVoice() || {}).name || "";
+    const vs = AI.voices().slice().sort((a, b) => (/^en/i.test(b.lang) - /^en/i.test(a.lang)) || (b.localService - a.localService) || a.name.localeCompare(b.name));
+    sel.innerHTML = vs.length ? vs.map((v) => `<option value="${esc(v.name)}"${v.name === cur ? " selected" : ""}>${esc(v.name)} · ${esc(v.lang)}${v.localService ? "" : " · online"}</option>`).join("")
+      : `<option value="">${AI.canSpeak ? "no voices found yet" : "this browser cannot speak"}</option>`;
+  }
+  if (AI.canSpeak) speechSynthesis.onvoiceschanged = () => { if (!$("settings").classList.contains("hidden")) fillVoices(); };
   function openSettings() {
     const s = AI.settings;
     document.querySelectorAll("input[name=narr]").forEach((r) => (r.checked = r.value === s.narrator));
     document.querySelectorAll("input[name=paint]").forEach((r) => (r.checked = r.value === s.painter));
     $("olUrl").value = s.ollamaUrl; $("olModel").value = s.ollamaModel; $("oaUrl").value = s.openaiUrl; $("oaModel").value = s.openaiModel; $("pUrl").value = s.painterUrl;
-    $("testOut").textContent = "";
+    $("vOn").checked = s.voice === "on"; $("vRate").value = s.voiceRate; $("vRateOut").textContent = (+s.voiceRate).toFixed(2) + "×";
+    fillVoices();
+    ["outNarr", "outPaint", "outVoice"].forEach((id) => ($(id).textContent = ""));
+    $("paintTestImg").classList.add("hidden");
     $("settings").classList.remove("hidden");
   }
   function readSettings() {
     return { narrator: (document.querySelector("input[name=narr]:checked") || {}).value || "templates", painter: (document.querySelector("input[name=paint]:checked") || {}).value || "none",
-      ollamaUrl: $("olUrl").value.trim(), ollamaModel: $("olModel").value.trim(), openaiUrl: $("oaUrl").value.trim(), openaiModel: $("oaModel").value.trim(), painterUrl: $("pUrl").value.trim() };
+      ollamaUrl: $("olUrl").value.trim(), ollamaModel: $("olModel").value.trim(), openaiUrl: $("oaUrl").value.trim(), openaiModel: $("oaModel").value.trim(), painterUrl: $("pUrl").value.trim(),
+      voice: $("vOn").checked ? "on" : "off", voiceName: $("vName").value, voiceRate: +$("vRate").value };
   }
   $("bSet").onclick = $("bSet2").onclick = openSettings;
   $("setClose").onclick = () => $("settings").classList.add("hidden");
   $("setSave").onclick = () => {
-    AI.saveSettings(readSettings()); $("settings").classList.add("hidden");
-    if (G) { render(); showLastPicture(); $("narrSrc").textContent = `narrator: ${AI.settings.narrator} · painter: ${AI.settings.painter === "none" ? "off" : "local"} — takes effect from the next year`; }
+    AI.saveSettings(readSettings()); $("settings").classList.add("hidden"); voiceButton();
+    if (G) { render(); showLastPicture(); $("narrSrc").textContent = `narrator: ${AI.settings.narrator} · painter: ${AI.settings.painter === "none" ? "off" : "local"} · voice: ${AI.settings.voice} — takes effect from the next year`; }
   };
-  $("setTest").onclick = async () => { AI.saveSettings(readSettings()); $("testOut").textContent = "Testing… the first answer loads the model, which can take a minute."; const r = await AI.test((m) => { $("testOut").textContent = "Testing… " + m; }); $("testOut").textContent = `Narrator: ${r.narrator}  Painter: ${r.painter}`; };
+  $("vRate").oninput = () => ($("vRateOut").textContent = (+$("vRate").value).toFixed(2) + "×");
+  $("testNarr").onclick = async () => {
+    AI.saveSettings(readSettings()); const out = $("outNarr");
+    out.textContent = "Testing… the first answer loads the model, which can take a minute.";
+    out.textContent = await AI.testNarrator((m) => (out.textContent = m));
+  };
+  $("testPaint").onclick = async () => {
+    AI.saveSettings(readSettings()); const out = $("outPaint"), img = $("paintTestImg");
+    img.classList.add("hidden"); out.textContent = "Asking the painter…";
+    const r = await AI.testPainter((m) => (out.textContent = m));
+    out.textContent = r.msg;
+    if (r.img) { img.src = r.img; img.classList.remove("hidden"); }
+  };
+  $("testVoice").onclick = () => {
+    AI.saveSettings(readSettings());
+    if (!AI.canSpeak) { $("outVoice").textContent = "This browser has no speech."; return; }
+    const v = AI.pickVoice();
+    $("outVoice").textContent = v ? `${v.name}${v.localService ? " (on this computer)" : " (online)"}` : "No voice found.";
+    AI.speak($("narrText").textContent || "The house is quiet tonight. Somewhere a dog barks, and then nothing.", true);
+  };
+
+  // the little speaker on the narration: voice on and off without opening the settings
+  function voiceButton() {
+    const on = AI.settings.voice === "on", b = $("narrVoice");
+    b.textContent = on ? "🔊 voice" : "🔈 voice"; b.classList.toggle("on", on);
+    b.title = on ? "Stop reading the narration aloud" : "Read the narration aloud";
+    b.classList.toggle("hidden", !AI.canSpeak);
+  }
+  $("narrVoice").onclick = () => {
+    const on = AI.settings.voice !== "on";
+    AI.saveSettings({ voice: on ? "on" : "off" }); voiceButton();
+    if (on) AI.speak($("narrText").textContent); else AI.stopSpeaking();
+  };
+  voiceButton();
 
   // ------------------------------------------------------------- start
   let chosenStart = H.STARTS[0].id;
@@ -557,6 +601,7 @@
   function narrateIntro() {
     $("narrText").textContent = G.log.filter((l) => l.year === G.year).map((l) => l.text).slice(-1)[0] || "";
     $("narrSrc").textContent = "";
+    AI.speak($("narrText").textContent);
   }
   $("bContinue").onclick = () => loadGame(localStorage.getItem("life2.current"));
   $("bBegin").onclick = () => {

@@ -23,6 +23,7 @@
     narrator: "templates", ollamaUrl: "http://localhost:11434", ollamaModel: "qwen2.5:7b",
     openaiUrl: "http://localhost:8080", openaiModel: "local", webllmModel: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     painter: "none", painterUrl: "http://localhost:7861", paintEvery: "milestones",
+    voice: "off", voiceName: "", voiceRate: 0.95,
   };
   function loadSettings() {
     try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem("life2.ai") || "{}")); }
@@ -281,31 +282,66 @@
     return val;
   }
 
-  // the test writes one real sentence, so it proves generation works, not only that the server is up
-  async function test(onProgress) {
-    const out = {};
+  // the narrator test writes one real sentence, so it proves generation works, not only that the server is up
+  async function testNarrator(onProgress) {
     if (S.narrator === "ollama") {
       try {
-        const r = await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/tags");
+        const r = await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/tags", { signal: AbortSignal.timeout(5000) });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const names = ((await r.json()).models || []).map((m) => m.name);
         const want = S.ollamaModel.includes(":") ? S.ollamaModel : S.ollamaModel + ":latest";
-        if (!names.includes(want)) out.narrator = `Ollama is running but has no model "${S.ollamaModel}". Installed: ${names.join(", ") || "none"}.`;
-        else {
-          const t0 = Date.now();
-          const t = await callOllama("You write one short sentence.", "Write one sentence about rain on a roof.", 1, onProgress, { maxTokens: 40 });
-          out.narrator = `Ollama wrote a test line in ${((Date.now() - t0) / 1000).toFixed(1)} s: "${clean(t).slice(0, 80)}"`;
-        }
-      } catch (e) { out.narrator = /fetch/i.test(e.message) ? "Can't reach Ollama at " + S.ollamaUrl + ". Is it running?" : e.message; }
+        if (!names.includes(want)) return `Ollama is running but has no model "${S.ollamaModel}". Installed: ${names.join(", ") || "none"}.`;
+        const t0 = Date.now();
+        const t = await callOllama("You write one short sentence.", "Write one sentence about rain on a roof.", 1, onProgress, { maxTokens: 40 });
+        return `Ollama wrote a line in ${((Date.now() - t0) / 1000).toFixed(1)} s: "${clean(t).slice(0, 90)}"`;
+      } catch (e) { return /fetch|timed? ?out/i.test(e.message) ? "Can't reach Ollama at " + S.ollamaUrl + ". Is it running?" : e.message; }
     }
-    else if (S.narrator === "openai") { try { const r = await fetch(S.openaiUrl.replace(/\/$/, "") + "/v1/models"); out.narrator = r.ok ? "Local model server answered." : "HTTP " + r.status; } catch (e) { out.narrator = "Can't reach " + S.openaiUrl; } }
-    else if (S.narrator === "webllm") out.narrator = navigator.gpu ? "WebGPU available. The model downloads on first use (about 1 GB)." : "This browser has no WebGPU.";
-    else out.narrator = "Written templates.";
-    if (S.painter === "local") { try { const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/health", { signal: AbortSignal.timeout(5000) }); out.painter = r.ok ? "Painter answered: " + ((await r.json()).model || "ok") : "HTTP " + r.status; } catch (e) { out.painter = "Can't reach the painter at " + S.painterUrl + " (still loading? wait for \"painter ready\" in its window)."; } }
-    else out.painter = "No pictures.";
-    return out;
+    if (S.narrator === "openai") {
+      try { const t0 = Date.now(); const t = await callOpenAI("You write one short sentence.", "Write one sentence about rain on a roof.", 1); return `The server wrote a line in ${((Date.now() - t0) / 1000).toFixed(1)} s: "${clean(t).slice(0, 90)}"`; }
+      catch (e) { return "Can't get a line from " + S.openaiUrl + ": " + e.message; }
+    }
+    if (S.narrator === "webllm") return navigator.gpu ? "WebGPU available. The model downloads on first use (about 1 GB)." : "This browser has no WebGPU.";
+    return "Written narration, no AI. Choose a narrator above first.";
   }
 
-  const api = { get settings() { return S; }, saveSettings, narrate, paint, scene, templateNarration, guard, cacheGet, cachePut, cacheDropPrefix, test, DEFAULTS };
+  // the painter test paints one real picture
+  async function testPainter(onProgress) {
+    if (S.painter !== "local") return { msg: "Choose Local painter above first." };
+    const base = S.painterUrl.replace(/\/$/, "");
+    let model = "";
+    try { const r = await fetch(base + "/health", { signal: AbortSignal.timeout(5000) }); model = (await r.json()).model || ""; }
+    catch (e) { return { msg: `Can't reach the painter at ${S.painterUrl}. Still loading? Wait for "painter ready" in its window.` }; }
+    const t0 = Date.now();
+    const tick = setInterval(() => onProgress && onProgress(`${model} is painting… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
+    try {
+      const r = await fetch(base + "/paint", { signal: AbortSignal.timeout(180000), method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "a quiet courtyard with a fig tree and a sleeping dog, an old woman shelling peas on a bench, late afternoon light. " + STYLE, negative: NEG, seed: 7, width: 768, height: 512 }) });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      return { msg: `${model} painted this in ${((Date.now() - t0) / 1000).toFixed(1)} s.`, img: j.image };
+    } catch (e) { return { msg: "The painter answered but could not paint: " + (e.name === "TimeoutError" ? "no picture in 180 s (GPU busy?)" : e.message) }; }
+    finally { clearInterval(tick); }
+  }
+
+  // ---------------------------------------------------------------- the voice
+  // the browser's own speech: free, offline for the system's local voices
+  const canSpeak = typeof speechSynthesis !== "undefined";
+  function voices() { return canSpeak ? speechSynthesis.getVoices() : []; }
+  function pickVoice() {
+    const vs = voices();
+    return vs.find((v) => v.name === S.voiceName) || vs.find((v) => v.localService && /^en/i.test(v.lang)) || vs.find((v) => /^en/i.test(v.lang)) || vs[0] || null;
+  }
+  function speak(text, force) {
+    if (!canSpeak || !text || (!force && S.voice !== "on")) return;
+    speechSynthesis.cancel();                       // a new year interrupts the old one, so speech never lags behind
+    const u = new SpeechSynthesisUtterance(text);
+    const v = pickVoice();
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.rate = +S.voiceRate || 0.95;
+    speechSynthesis.speak(u);
+  }
+  function stopSpeaking() { if (canSpeak) speechSynthesis.cancel(); }
+
+  const api = { get settings() { return S; }, saveSettings, narrate, paint, scene, templateNarration, guard, cacheGet, cachePut, cacheDropPrefix, testNarrator, testPainter, canSpeak, voices, pickVoice, speak, stopSpeaking, DEFAULTS };
   root.AI = api;
 })(typeof window !== "undefined" ? window : globalThis);

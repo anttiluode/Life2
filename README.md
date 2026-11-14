@@ -27,6 +27,13 @@ The rule that keeps it good: **the AI tells the life, it never decides it.** Eac
 | Other local server | anything OpenAI-compatible: llama.cpp `llama-server`, LM Studio |
 | In the browser | WebLLM over WebGPU, ~1 GB one-time download (experimental) |
 
+| voice | how |
+|---|---|
+| Off | silent |
+| On | the browser reads each year's narration aloud with your system's voices; 🔊 on the narration turns it on and off |
+
+On Windows the built-in voices (David, Zira, Mark) stay on the computer. Edge also lists "Online (Natural)" voices that sound much better but send the text to Microsoft; the settings mark them *online*.
+
 | painter | how |
 |---|---|
 | None | no pictures |
@@ -61,7 +68,7 @@ setx OLLAMA_ORIGINS "*"
 
 In PowerShell the one-off form is `$env:OLLAMA_ORIGINS="*"; ollama serve`.
 
-In the game, open **AI**, choose Ollama and Local painter, press **Test**, then **Save**. The test writes one real sentence, so it proves the model generates, not only that Ollama is up. The page talks to Ollama (11434) and the painter (7861) directly, so after the page loads, nothing more shows up in the `http.server` window. That is normal.
+In the game, open **AI**, choose Ollama and Local painter, and use the three test buttons, then **Save**. **Test narrator** writes one real sentence, **Test painter** paints one real picture and shows it, **Test voice** reads a line aloud. The page talks to Ollama (11434) and the painter (7861) directly, so after the page loads, nothing more shows up in the `http.server` window. That is normal.
 
 If the narration says *written instead: no answer from Ollama…*, the model didn't produce a word within 150 seconds. Usually the GPU is full: the painter is loading at the same time. `ollama ps` shows whether the model sits on GPU or CPU. Wait for `painter ready`, then press **retell**. SDXL-Turbo plus a 7B model may not both fit in 12 GB at once. Ollama unloads idle models after a few minutes, but the comfortable pairing is either `qwen2.5:3b` with SDXL-Turbo, or `qwen2.5:7b` with SD-Turbo.
 
