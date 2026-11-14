@@ -123,19 +123,52 @@
     return String(t || "").replace(/^["'\s]+|["'\s]+$/g, "").replace(/^(Narration|Year)\s*:\s*/i, "").replace(/\n+/g, " ").trim();
   }
 
-  async function callOllama(sys, user, seed) {
-    const r = await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: S.ollamaModel, stream: false, messages: [{ role: "system", content: sys }, { role: "user", content: user }],
-        options: { temperature: 0.85, seed, num_predict: 180 } }),
-    });
-    if (!r.ok) throw new Error("ollama " + r.status);
-    const j = await r.json();
-    return j.message && j.message.content;
+  // Ollama, streamed: words arrive as they are written, so a slow first load shows progress instead of
+  // hanging. Gives up if nothing arrives for a while (model still loading, GPU busy, server stuck).
+  async function callOllama(sys, user, seed, onProgress, opts) {
+    opts = opts || {};
+    const ctl = new AbortController();
+    let timer = null, got = false;
+    const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => ctl.abort(), ms); };
+    arm(opts.firstWait || 150000);                       // the first word may wait for the model to load
+    const t0 = Date.now();
+    const tick = setInterval(() => { if (!got && onProgress) onProgress(`the narrator is loading the model… ${Math.round((Date.now() - t0) / 1000)} s`); }, 1000);
+    try {
+      const r = await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.signal,
+        body: JSON.stringify({ model: S.ollamaModel, stream: true, keep_alive: "30m", messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+          options: { temperature: 0.85, seed, num_predict: opts.maxTokens || 180 } }),
+      });
+      if (!r.ok) { let m = ""; try { m = (await r.json()).error || ""; } catch (e) {} throw new Error("Ollama " + r.status + (m ? ": " + m : "")); }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "", text = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const j = JSON.parse(line);
+          if (j.error) throw new Error("Ollama: " + j.error);
+          if (j.message && j.message.content) {
+            text += j.message.content; got = true;
+            arm(30000);                                  // after the first word, 30 s of silence is a stall
+            if (onProgress) onProgress(`the narrator is writing… ${text.split(/\s+/).filter(Boolean).length} words`);
+          }
+          if (j.done) return text;
+        }
+      }
+      return text;
+    } catch (e) {
+      if (e.name === "AbortError") throw new Error(got ? "Ollama stopped mid-sentence" : "no answer from Ollama in " + Math.round((Date.now() - t0) / 1000) + " s (is the GPU busy?)");
+      throw e;
+    } finally { clearTimeout(timer); clearInterval(tick); }
   }
   async function callOpenAI(sys, user, seed) {
     const r = await fetch(S.openaiUrl.replace(/\/$/, "") + "/v1/chat/completions", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(150000),
       body: JSON.stringify({ model: S.openaiModel, messages: [{ role: "system", content: sys }, { role: "user", content: user }], temperature: 0.85, seed, max_tokens: 180 }),
     });
     if (!r.ok) throw new Error("llm " + r.status);
@@ -161,19 +194,21 @@
     const ck = key + ":" + (variant || 0) + ":text";
     const hit = await cacheGet(ck);
     if (hit) return hit;
-    let text = null, source = "template";
+    let text = null, source = "template", error = null;
     if (S.narrator !== "templates") {
       const call = S.narrator === "ollama" ? callOllama : S.narrator === "openai" ? callOpenAI : callWebLLM;
       for (let k = 0; k < 2 && !text; k++) {
         try {
           const t = clean(await call(SYSTEM, userPrompt(f, prev), hash(key) + 7919 * ((variant || 0) * 3 + k), onProgress));
           if (guard(t, f)) { text = t; source = S.narrator; }
-        } catch (e) { if (onProgress) onProgress("Narrator unavailable: " + e.message); break; }
+        } catch (e) { error = e.message; break; }
       }
+      if (!text && !error) error = "the narrator's two tries strayed from the facts";
     }
     if (!text) text = templateNarration(f, variant);
     const val = { text, source };
-    await cachePut(ck, val);
+    if (!error) await cachePut(ck, val);     // a failed call is not cached, so it is tried again later
+    else val.error = error;
     return val;
   }
 
@@ -235,7 +270,7 @@
     if (hit) return hit;
     const sc = scene(G, m);
     if (!sc) return null;
-    const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/paint", {
+    const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/paint", { signal: AbortSignal.timeout(180000),
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: sc.prompt, negative: sc.negative, seed: (sc.seed + 104729 * (variant || 0)) >>> 0, width: 768, height: 512 }),
     });
@@ -246,13 +281,27 @@
     return val;
   }
 
-  async function test() {
+  // the test writes one real sentence, so it proves generation works, not only that the server is up
+  async function test(onProgress) {
     const out = {};
-    if (S.narrator === "ollama") { try { const r = await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/tags"); out.narrator = r.ok ? "Ollama answered." : "Ollama: HTTP " + r.status; } catch (e) { out.narrator = "Can't reach Ollama at " + S.ollamaUrl + ". Is it running with OLLAMA_ORIGINS set?"; } }
+    if (S.narrator === "ollama") {
+      try {
+        const r = await fetch(S.ollamaUrl.replace(/\/$/, "") + "/api/tags");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const names = ((await r.json()).models || []).map((m) => m.name);
+        const want = S.ollamaModel.includes(":") ? S.ollamaModel : S.ollamaModel + ":latest";
+        if (!names.includes(want)) out.narrator = `Ollama is running but has no model "${S.ollamaModel}". Installed: ${names.join(", ") || "none"}.`;
+        else {
+          const t0 = Date.now();
+          const t = await callOllama("You write one short sentence.", "Write one sentence about rain on a roof.", 1, onProgress, { maxTokens: 40 });
+          out.narrator = `Ollama wrote a test line in ${((Date.now() - t0) / 1000).toFixed(1)} s: "${clean(t).slice(0, 80)}"`;
+        }
+      } catch (e) { out.narrator = /fetch/i.test(e.message) ? "Can't reach Ollama at " + S.ollamaUrl + ". Is it running?" : e.message; }
+    }
     else if (S.narrator === "openai") { try { const r = await fetch(S.openaiUrl.replace(/\/$/, "") + "/v1/models"); out.narrator = r.ok ? "Local model server answered." : "HTTP " + r.status; } catch (e) { out.narrator = "Can't reach " + S.openaiUrl; } }
     else if (S.narrator === "webllm") out.narrator = navigator.gpu ? "WebGPU available. The model downloads on first use (about 1 GB)." : "This browser has no WebGPU.";
     else out.narrator = "Written templates.";
-    if (S.painter === "local") { try { const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/health"); out.painter = r.ok ? "Painter answered: " + ((await r.json()).model || "ok") : "HTTP " + r.status; } catch (e) { out.painter = "Can't reach the painter at " + S.painterUrl + "."; } }
+    if (S.painter === "local") { try { const r = await fetch(S.painterUrl.replace(/\/$/, "") + "/health", { signal: AbortSignal.timeout(5000) }); out.painter = r.ok ? "Painter answered: " + ((await r.json()).model || "ok") : "HTTP " + r.status; } catch (e) { out.painter = "Can't reach the painter at " + S.painterUrl + " (still loading? wait for \"painter ready\" in its window)."; } }
     else out.painter = "No pictures.";
     return out;
   }

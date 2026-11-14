@@ -300,7 +300,7 @@
   }
   function showNarr(v, key) {
     $("narrText").textContent = v.text;
-    $("narrSrc").textContent = v.source === "template" ? (AI.settings.narrator === "templates" ? "written narration · turn on a narrator under AI" : "written (the narrator was unavailable or strayed from the facts)") : "narrated by " + v.source + ((variants[key] || 0) ? ` · version ${(variants[key] || 0) + 1}` : "");
+    $("narrSrc").textContent = v.source === "template" ? (AI.settings.narrator === "templates" ? "written narration · turn on a narrator under AI" : "written instead: " + (v.error || "the narrator strayed from the facts")) : "narrated by " + v.source + ((variants[key] || 0) ? ` · version ${(variants[key] || 0) + 1}` : "");
   }
   $("narrReroll").onclick = async () => {
     const rec = G.records[G.records.length - 1];
@@ -308,7 +308,7 @@
     const key = `${saveId}:${rec.gen}:${rec.year}`;
     setVariant(key, (variants[key] || 0) + 1);
     currentKey = key; $("narrSrc").textContent = "retelling…";
-    const v = await AI.narrate(key, rec.facts, lastTexts.slice(-3, -1), variants[key]);
+    const v = await AI.narrate(key, rec.facts, lastTexts.slice(-3, -1), variants[key], (msg) => { if (currentKey === key) $("narrSrc").textContent = msg; });
     if (currentKey === key) showNarr(v, key);
   };
 
@@ -536,7 +536,7 @@
     AI.saveSettings(readSettings()); $("settings").classList.add("hidden");
     if (G) { render(); showLastPicture(); $("narrSrc").textContent = `narrator: ${AI.settings.narrator} · painter: ${AI.settings.painter === "none" ? "off" : "local"} — takes effect from the next year`; }
   };
-  $("setTest").onclick = async () => { AI.saveSettings(readSettings()); $("testOut").textContent = "Testing…"; const r = await AI.test(); $("testOut").textContent = `Narrator: ${r.narrator}  Painter: ${r.painter}`; };
+  $("setTest").onclick = async () => { AI.saveSettings(readSettings()); $("testOut").textContent = "Testing… the first answer loads the model, which can take a minute."; const r = await AI.test((m) => { $("testOut").textContent = "Testing… " + m; }); $("testOut").textContent = `Narrator: ${r.narrator}  Painter: ${r.painter}`; };
 
   // ------------------------------------------------------------- start
   let chosenStart = H.STARTS[0].id;

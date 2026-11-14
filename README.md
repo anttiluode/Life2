@@ -61,7 +61,9 @@ setx OLLAMA_ORIGINS "*"
 
 In PowerShell the one-off form is `$env:OLLAMA_ORIGINS="*"; ollama serve`.
 
-In the game, open **AI**, choose Ollama and Local painter, and press **Test**. SDXL-Turbo plus a 7B model may not both fit in 12 GB at once. Ollama unloads idle models after a few minutes, but the comfortable pairing is either `qwen2.5:3b` with SDXL-Turbo, or `qwen2.5:7b` with SD-Turbo.
+In the game, open **AI**, choose Ollama and Local painter, press **Test**, then **Save**. The test writes one real sentence, so it proves the model generates, not only that Ollama is up. The page talks to Ollama (11434) and the painter (7861) directly, so after the page loads, nothing more shows up in the `http.server` window. That is normal.
+
+If the narration says *written instead: no answer from Ollama…*, the model didn't produce a word within 150 seconds. Usually the GPU is full: the painter is loading at the same time. `ollama ps` shows whether the model sits on GPU or CPU. Wait for `painter ready`, then press **retell**. SDXL-Turbo plus a 7B model may not both fit in 12 GB at once. Ollama unloads idle models after a few minutes, but the comfortable pairing is either `qwen2.5:3b` with SDXL-Turbo, or `qwen2.5:7b` with SD-Turbo.
 
 ## How the numbers behave
 
